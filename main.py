@@ -1,67 +1,56 @@
 import yfinance as yf
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
+import time
+import io
 
 # ================== CONFIGURATION ==================
-# Your WhatsApp bot endpoint (change only if your provider uses a different URL)
-WHATSAPP_WEBHOOK = "https://api.callmebot.com/whatsapp.php"  # Works for +34644872157
-
-# Your phone number in international format (with +)
-YOUR_PHONE = "+852xxxxxxxx"   # ← CHANGE THIS TO YOUR NUMBER
-
-# Choose notification method: "callmebot" or "ultra-msg" or "custom"
-# Most +34 Spanish bots use callmebot format
-NOTIFY_METHOD = "callmebot"   # ← keep this if using +34644872157
-
+WHATSAPP_WEBHOOK = "https://api.callmebot.com/whatsapp.php"
+YOUR_PHONE = "+852xxxxxxxxx"          # ← CHANGE THIS TO YOUR REAL NUMBER
+NOTIFY_METHOD = "callmebot"           # keep this
 # ===================================================
 
 def send_whatsapp(message):
     if NOTIFY_METHOD == "callmebot":
-        url = f"{WHATSAPP_WEBHOOK}?phone={YOUR_PHONE}&text={requests.utils.quote(message)}&apikey=123456"
-        # ↑ replace 123456 with your real apikey if your bot requires one (many free ones don't)
+        url = f"{WHATSAPP_WEBHOOK}?phone={YOUR_PHONE}&text={requests.utils.quote(message)}"
         try:
-            requests.get(url, timeout=10)
+            requests.get(url, timeout=15)
         except:
             pass
-    else:
-        # fallback for other providers
-        payload = {"number": YOUR_PHONE, "message": message}
-        try:
-            requests.post(WHATSAPP_WEBHOOK, json=payload, timeout=10)
-        except:
-            pass
+
+def get_full_universe():
+    us_tickers = []
+    hk_tickers = []
+
+    # —— US stocks (NASDAQ + NYSE + AMEX) ——
+    try:
+        nasdaq = pd.read_csv("https://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt", sep="|")
+        other = pd.read_csv("https://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt", sep="|")
+        us1 = nasdaq[nasdaq["Test Issue"] == "N"]["Symbol"].dropna().tolist()
+        us2 = other[other["Test Issue"] == "N"]["ACT Symbol"].dropna().tolist()
+        us_tickers = list(set(us1 + us2))
+        print(f"US tickers loaded: {len(us_tickers)}")
+    except:
+        us_tickers = ["AAPL","MSFT","NVDA","TSLA","GOOGL"]
+
+    # —— HK stocks (Hang Seng + major blue chips) ——
+    try:
+        url = "https://finance.yahoo.com/quote/%5EHSI/components/"
+        tables = pd.read_html(url)
+        hsi = tables[0]["Symbol"].str.replace("*","").tolist()
+        hk_extra = ["0001.HK","0002.HK","0003.HK","0005.HK","0011.HK","0016.HK","0019.HK","0066.HK","0083.HK","0388.HK","0700.HK","09988.HK","03690.HK","01810.HK","01211.HK","00941.HK","01398.HK","03988.HK","00939.HK","0688.HK","0823.HK","1088.HK","1109.HK","1929.HK","2269.HK","2388.HK","2628.HK","3328.HK","3968.HK","9618.HK","9888.HK","9961.HK","9992.HK"]
+        hk_tickers = list(set([t + ".HK" if not t.endswith(".HK") else t for t in hsi + hk_extra]))
+        print(f"HK tickers loaded: {len(hk_tickers)}")
+    except:
+        hk_tickers = ["0700.HK","9988.HK","3690.HK","0005.HK","0388.HK"]
+
+    return us_tickers, hk_tickers
 
 def get_signals():
-    # Universe: big liquid US + HK stocks (FIXED: reliable HK tickers only – tested live Nov 28, 2025)
-    us_tickers = ["NVDA","SMCI","PLTR","ARM","COIN","MSTR","CRWD","APP","CELH","LLY","META","TSLA","AMD","AVGO","MSFT","AAPL","AMZN","GOOGL"]
-    hk_tickers = [
-        "0700.HK",  # Tencent
-        "9988.HK",  # Alibaba
-        "3690.HK",  # Meituan
-        "1810.HK",  # Xiaomi
-        "1211.HK",  # BYD
-        "0388.HK",  # HKEX
-        "0005.HK",  # HSBC
-        "1299.HK",  # AIA
-        "9999.HK",  # Trip.com
-        "2318.HK",  # Ping An
-        "0941.HK",  # China Mobile
-        "1398.HK",  # ICBC
-        "3988.HK",  # Bank of China
-        "0002.HK",  # CLP Holdings
-        "0003.HK",  # HK & China Gas
-        "0011.HK",  # Hang Seng Bank
-        "0016.HK",  # SHK Properties
-        "0017.HK",  # New World Dev
-        "0066.HK",  # MTR Corp
-        "0823.HK",  # Link REIT
-        "1088.HK"   # China Shenhua
-    ]
-
-    all_tickers = us_tickers + hk_tickers
-    data = yf.download(all_tickers, period="18mo", interval="1d", group_by="ticker", auto_adjust=True)
+    us_tickers, hk_tickers = get_full_universe()
+    all_tickers = us_tickers[:1500] + hk_tickers  # ~1,600 total = perfect balance
 
     results = {
         "Stage 2 Breakout": [],
@@ -72,14 +61,30 @@ def get_signals():
         "IBD 50-style CANSLIM": []
     }
 
-    hk_time = datetime.now(pytz.timezone('Asia/Hong_Kong'))
-    today_str = hk_time.strftime("%Y-%m-%d")
+    # Batch download (200 at a time – safe for Render free tier)
+    batch_size = 200
+    data = {}
+    for i in range(0, len(all_tickers), batch_size):
+        batch = all_tickers[i:i+batch_size]
+        try:
+            batch_data = yf.download(batch, period="18mo", interval="1d", auto_adjust=True, threads=True, progress=False)
+            if len(batch) == 1:
+                batch_data = {batch[0]: batch_data}
+            else:
+                for t in batch:
+                    if t in batch_data:
+                        data[t] = batch_data[t]
+            time.sleep(0.3)
+        except:
+            continue
+
+    hk_time = datetime.now(pytz.timezone('Asia/Hong_Kong')).strftime("%Y-%m-%d")
 
     for ticker in all_tickers:
         try:
-            df = data[ticker].copy() if len(all_tickers) > 1 else data.copy()
-            df = df.dropna()
-
+            if ticker not in data:
+                continue
+            df = data[ticker].dropna()
             if len(df) < 300:
                 continue
 
@@ -90,63 +95,60 @@ def get_signals():
             avg_vol_50 = df['Volume'].rolling(50).mean().iloc[-1]
             avg_vol_10 = df['Volume'].rolling(10).mean().iloc[-1]
 
-            # Basic filters
-            if (".HK" in ticker and price < 10) or (".HK" not in ticker and price < 15):
+            # Liquidity filter
+            if volume < 500000 or avg_vol_50 < 800000:
                 continue
-            if volume < 500000:
+            if (".HK" in ticker and price < 10) or (".HK" not in ticker and price < 15):
                 continue
 
             high_52w = df['High'].rolling(252).max().iloc[-1]
-            low_52w = df['Low'].rolling(252).min().iloc[-1]
-            sma_30w = df['Close'].rolling(150).mean().iloc[-1]  # ≈30 weeks
-
-            rs = len([t for t in all_tickers if yf.Ticker(t).info.get('52WeekChange',0) < latest.get('52WeekChange',0)]) / len(all_tickers) * 100
-
+            sma_30w = df['Close'].rolling(150).mean().iloc[-1]
             change_pct = (price / prev['Close'] - 1) * 100
 
             # 1. Stage 2 Breakout
-            if price > sma_30w and latest['High'] >= high_52w and volume >= 1.5 * avg_vol_50 and rs >= 85:
-                results["Stage 2 Breakout"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  ({change_pct:+.1f}%)  Vol {volume/avg_vol_50:.1f}×  RS {rs:.0f}")
+            if price > sma_30w and latest['High'] >= high_52w and volume >= 1.5 * avg_vol_50:
+                results["Stage 2 Breakout"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  (+{change_pct:.1f}%)  Vol {volume/avg_vol_50:.1f}×")
 
             # 2. Pocket Pivot
-            if change_pct > 0 and volume > max(df['Volume'].iloc[-10:-1][df['Close'].iloc[-10:-1] < prev['Close']]):
-                results["Pocket Pivot"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  ({change_pct:+.1f}%)  Vol {volume/max(df['Volume'].iloc[-10:-1]):.1f}×")
+            down_days_vol = df['Volume'].iloc[-11:-1][df['Close'].iloc[-11:-1] < prev['Close']]
+            if change_pct > 0 and len(down_days_vol) > 0 and volume > down_days_vol.max():
+                results["Pocket Pivot"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  (+{change_pct:.1f}%)")
 
             # 3. Power Play
             if latest['High'] >= high_52w * 0.95 and volume >= 2 * avg_vol_50:
-                results["Power Play"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  ({change_pct:+.1f}%)  Vol {volume/avg_vol_50:.1f}×")
+                results["Power Play"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  (+{change_pct:.1f}%)")
 
             # 4. 3-Week Tight Close
-            recent_3w = df['Close'].iloc[-15:]
-            if recent_3w.max() / recent_3w.min() <= 1.02 and volume < avg_vol_50 * 0.8:
-                results["3-Week Tight Close"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  ({change_pct:+.1f}%)")
+            recent = df['Close'].iloc[-15:]
+            if recent.max() / recent.min() <= 1.02 and volume < avg_vol_50 * 0.8:
+                results["3-Week Tight Close"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}")
 
             # 5. All-Time High + Volume Surge
-            all_time_high = df['High'].max()
-            if abs(latest['High'] - all_time_high) / all_time_high < 0.03 and volume >= 2 * avg_vol_10:
-                results["All-Time High + Volume Surge"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  ({change_pct:+.1f}%)  Vol {volume/avg_vol_10:.1f}×")
+            ath = df['High'].max()
+            if abs(latest['High'] - ath) / ath < 0.03 and volume >= 2 * avg_vol_10:
+                results["All-Time High + Volume Surge"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  (+{change_pct:.1f}%)")
 
-            # 6. IBD 50-style CANSLIM (simplified)
-            info = yf.Ticker(ticker).info
-            eps_growth = info.get("earningsQuarterlyGrowth", 0)
-            if eps_growth > 0.25 and rs >= 80 and price > sma_30w:
-                results["IBD 50-style CANSLIM"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  EPS↑{eps_growth:.0%}")
+            # 6. CANSLIM simplified
+            info = yf.Ticker(ticker).fast_info
+            if hasattr(info, 'lastPrice'):
+                eps = info.get('earningsQuarterlyGrowth', 0)
+                if eps > 0.25 and price > sma_30w:
+                    results["IBD 50-style CANSLIM"].append(f"• {ticker.replace('.HK','')}   ${price:.2f}  EPS↑{eps:.0%}")
 
         except:
             continue
 
-    # Build final message
-    lines = [f"{today_str} 今日自動掃描結果 (US + HK)\n"]
-    for name, signals in results.items():
-        if signals:
-            lines.append(f"\n{name} ({len(signals)})")
-            lines.extend(signals[:15])  # max 15 per category to avoid message too long
+    # Build message
+    lines = [f"{hk_time} 今日自動掃描結果 (US+HK 全市場 ~1600 stocks)\n"]
+    for name, sigs in results.items():
+        if sigs:
+            lines.append(f"\n{name} ({len(sigs)})")
+            lines.extend(sigs[:20])  # max 20 per category
 
-    final_message = "\n".join(lines)
-    if len(final_message) > 3000:
-        final_message = final_message[:2900] + "\n... (truncated)"
-
-    send_whatsapp(final_message)
+    msg = "\n".join(lines)
+    if len(msg) > 3000:
+        msg = msg[:2900] + "\n... (truncated)"
+    send_whatsapp(msg)
 
 if __name__ == "__main__":
     get_signals()
