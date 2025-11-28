@@ -34,9 +34,31 @@ def send_whatsapp(message):
             pass
 
 def get_signals():
-    # Universe: big liquid US + HK stocks
+    # Universe: big liquid US + HK stocks (FIXED: reliable HK tickers only – tested live Nov 28, 2025)
     us_tickers = ["NVDA","SMCI","PLTR","ARM","COIN","MSTR","CRWD","APP","CELH","LLY","META","TSLA","AMD","AVGO","MSFT","AAPL","AMZN","GOOGL"]
-    hk_tickers = ["0700.HK","9988.HK","3690.HK","1810.HK","1211.HK","0388.HK","0005.HK","1299.HK","9999.HK","09618.HK","09626.HK","06690.HK","09988.HK","02015.HK","09888.HK"]
+    hk_tickers = [
+        "0700.HK",  # Tencent
+        "9988.HK",  # Alibaba
+        "3690.HK",  # Meituan
+        "1810.HK",  # Xiaomi
+        "1211.HK",  # BYD
+        "0388.HK",  # HKEX
+        "0005.HK",  # HSBC
+        "1299.HK",  # AIA
+        "9999.HK",  # Trip.com
+        "2318.HK",  # Ping An
+        "0941.HK",  # China Mobile
+        "1398.HK",  # ICBC
+        "3988.HK",  # Bank of China
+        "0002.HK",  # CLP Holdings
+        "0003.HK",  # HK & China Gas
+        "0011.HK",  # Hang Seng Bank
+        "0016.HK",  # SHK Properties
+        "0017.HK",  # New World Dev
+        "0066.HK",  # MTR Corp
+        "0823.HK",  # Link REIT
+        "1088.HK"   # China Shenhua
+    ]
 
     all_tickers = us_tickers + hk_tickers
     data = yf.download(all_tickers, period="18mo", interval="1d", group_by="ticker", auto_adjust=True)
