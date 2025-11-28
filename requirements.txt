@@ -1,7 +1,8 @@
 pandas
-yfinance
+yfinance==0.2.31  # Stable version without aggressive live imports
 requests
 python-dateutil
 pytz
 lxml
 html5lib
+websockets  # ← This fixes the crash
